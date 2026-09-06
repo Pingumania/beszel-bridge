@@ -1,26 +1,21 @@
 // Package beszel is a client for a self-hosted Beszel
 // (https://github.com/henrygd/beszel) instance's PocketBase-backed API. It
-// authenticates once and looks up whether a named system/container is
-// healthy.
+// uses a pre-generated auth token and looks up whether a named
+// system/container is healthy.
 //
 // --- IMPORTANT: verify your schema first ---
 // Beszel's API is built on PocketBase and its exact field names can change
 // between versions. Before relying on this, check what your own instance
 // actually returns:
 //
-//	TOKEN=$(curl -s -X POST http://<beszel-host>:8090/api/collections/users/auth-with-password \
-//	  -H "Content-Type: application/json" \
-//	  -d '{"identity":"you@example.com","password":"yourpassword"}' | jq -r .token)
-//
 //	curl -s "http://<beszel-host>:8090/api/collections/containers/records" \
-//	  -H "Authorization: Bearer $TOKEN" | jq .
+//	  -H "Authorization: Bearer $BESZEL_TOKEN" | jq .
 //
 // Look at the "status" (or equivalent) field on a container record and
 // adjust healthyValues below if needed.
 package beszel
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -45,95 +40,45 @@ type cacheEntry struct {
 	code    int
 }
 
-type authResponse struct {
-	Token string `json:"token"`
-}
-
 type listResponse struct {
 	Items []map[string]any `json:"items"`
 }
 
+// Token is a pre-generated PocketBase auth token for a Beszel instance.
+type Token string
+
 // Client holds a Beszel API session and caches to avoid hammering it.
 type Client struct {
-	baseURL  string
-	email    string
-	password string
-	client   *http.Client
+	baseURL string
+	token   Token
+	client  *http.Client
 
 	mu            sync.Mutex
-	token         string
-	tokenExpires  time.Time
 	systemIDCache map[string]string
 
 	resultMu    sync.Mutex
 	resultCache map[string]cacheEntry
 }
 
-// New creates a Client. baseURL is the root URL of the Beszel instance.
-func New(baseURL, email, password string) *Client {
+// New creates a Client. baseURL is the root URL of the Beszel instance,
+// token is a pre-generated PocketBase auth token (see README for how to
+// get one).
+func New(baseURL string, token Token) *Client {
 	return &Client{
 		baseURL:       strings.TrimRight(baseURL, "/"),
-		email:         email,
-		password:      password,
+		token:         token,
 		client:        &http.Client{Timeout: 5 * time.Second},
 		systemIDCache: make(map[string]string),
 		resultCache:   make(map[string]cacheEntry),
 	}
 }
 
-func (c *Client) getToken() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.token != "" && time.Now().Before(c.tokenExpires) {
-		return c.token, nil
-	}
-
-	body, err := json.Marshal(map[string]string{
-		"identity": c.email,
-		"password": c.password,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequest(
-		http.MethodPost,
-		c.baseURL+"/api/collections/users/auth-with-password",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("beszel auth failed: %s", resp.Status)
-	}
-
-	var auth authResponse
-	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
-		return "", err
-	}
-
-	c.token = auth.Token
-	// PocketBase tokens are long-lived; refresh well before they'd expire.
-	c.tokenExpires = time.Now().Add(50 * time.Minute)
-	return c.token, nil
-}
-
-func (c *Client) pbGet(path, token string) (*listResponse, error) {
+func (c *Client) pbGet(path string) (*listResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+string(c.token))
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -160,15 +105,10 @@ func (c *Client) getSystemID(name string) (string, error) {
 	}
 	c.mu.Unlock()
 
-	token, err := c.getToken()
-	if err != nil {
-		return "", err
-	}
-
 	filter := fmt.Sprintf("name='%s'", name)
 	path := "/api/collections/systems/records?filter=" + url.QueryEscape(filter)
 
-	data, err := c.pbGet(path, token)
+	data, err := c.pbGet(path)
 	if err != nil {
 		return "", err
 	}
@@ -215,16 +155,10 @@ func (c *Client) checkContainerUncached(system, container string) int {
 		return http.StatusNotFound
 	}
 
-	token, err := c.getToken()
-	if err != nil {
-		log.Printf("get token: %v", err)
-		return http.StatusBadGateway
-	}
-
 	filter := fmt.Sprintf("system='%s' && name='%s'", systemID, container)
 	path := "/api/collections/containers/records?filter=" + url.QueryEscape(filter)
 
-	data, err := c.pbGet(path, token)
+	data, err := c.pbGet(path)
 	if err != nil {
 		log.Printf("lookup container %q on %q: %v", container, system, err)
 		return http.StatusBadGateway

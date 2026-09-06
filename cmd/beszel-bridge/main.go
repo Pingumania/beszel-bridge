@@ -52,7 +52,7 @@ func handleStatus(client *beszel.Client) http.HandlerFunc {
 func main() {
 	cfg := loadConfig()
 
-	client := beszel.New(cfg.BeszelURL, cfg.BeszelEmail, cfg.BeszelPassword)
+	client := beszel.New(cfg.BeszelURL, cfg.BeszelToken)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status/", handleStatus(client))

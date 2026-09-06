@@ -18,6 +18,16 @@ healthy?" and answers with a plain HTTP status code instead:
 
 ## Setup
 
+Get an auth token from your Beszel instance (needs your Beszel account
+email/password once, to mint the token — the bridge itself never stores
+them):
+
+```sh
+curl -s -X POST http://<beszel-host>:8090/api/collections/users/auth-with-password \
+  -H "Content-Type: application/json" \
+  -d '{"identity":"you@example.com","password":"yourpassword"}' | jq -r .token
+```
+
 `docker-compose.yml`:
 ```yaml
 services:
@@ -26,20 +36,22 @@ services:
     restart: unless-stopped
     environment:
       - BESZEL_URL=http://beszel:8090
-      - BESZEL_EMAIL=you@example.com
-      - BESZEL_PASSWORD=yourpassword
+      - BESZEL_TOKEN=eyJhbGciOi...
     ports:
       - "8123:8123"
 ```
 
+PocketBase tokens expire (default 7 days unless your Beszel instance
+configures a longer TTL) — re-run the curl above and update `BESZEL_TOKEN`
+when the bridge starts returning 502s.
+
 ## Env variables
 
-| Variable          | Required | Default                | Description                     |
-|--------------------|----------|--------------------------|-----------------------------------|
-| `BESZEL_URL`      | no       | `http://beszel:8090`   | Root URL of your Beszel instance |
-| `BESZEL_EMAIL`    | yes      | -                       | Beszel account email             |
-| `BESZEL_PASSWORD` | yes      | -                       | Beszel account password          |
-| `PORT`            | no       | `8123`                  | Server listen port               |
+| Variable       | Required | Default               | Description                          |
+|-----------------|----------|--------------------------|-----------------------------------------|
+| `BESZEL_URL`   | no       | `http://beszel:8090`  | Root URL of your Beszel instance      |
+| `BESZEL_TOKEN` | yes      | -                      | PocketBase auth token (see Setup)     |
+| `PORT`         | no       | `8123`                 | Server listen port                    |
 
 ## Usage
 

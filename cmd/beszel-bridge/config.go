@@ -3,21 +3,21 @@ package main
 import (
 	"log"
 	"os"
+
+	"beszel-bridge/internal/beszel"
 )
 
 type config struct {
-	BeszelURL      string
-	BeszelEmail    string
-	BeszelPassword string
-	Port           string
+	BeszelURL   string
+	BeszelToken beszel.Token
+	Port        string
 }
 
 func loadConfig() config {
 	return config{
-		BeszelURL:      getenv("BESZEL_URL", "http://beszel:8090"),
-		BeszelEmail:    mustGetenv("BESZEL_EMAIL"),
-		BeszelPassword: mustGetenv("BESZEL_PASSWORD"),
-		Port:           getenv("PORT", "8123"),
+		BeszelURL:   getenv("BESZEL_URL", "http://beszel:8090"),
+		BeszelToken: beszel.Token(mustGetenv("BESZEL_TOKEN")),
+		Port:        getenv("PORT", "8123"),
 	}
 }
 
