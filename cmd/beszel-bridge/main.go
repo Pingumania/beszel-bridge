@@ -53,7 +53,10 @@ func handleStatus(client *beszel.Client) http.HandlerFunc {
 func main() {
 	cfg := loadConfig()
 
-	client := beszel.New(cfg.BeszelURL, cfg.BeszelToken)
+	client := beszel.New(cfg.BeszelURL, cfg.BeszelCreds)
+	if err := client.Authenticate(); err != nil {
+		log.Fatalf("authenticate with beszel: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status/", handleStatus(client))

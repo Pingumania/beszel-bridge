@@ -1,23 +1,14 @@
 // Package beszel is a client for a self-hosted Beszel
 // (https://github.com/henrygd/beszel) instance's PocketBase-backed API. It
-// uses a pre-generated auth token and looks up whether a named
-// system/container is healthy.
-//
-// --- IMPORTANT: verify your schema first ---
-// Beszel's API is built on PocketBase and its exact field names can change
-// between versions. Before relying on this, check what your own instance
-// actually returns:
-//
-//	curl -s "http://<beszel-host>:8090/api/collections/containers/records" \
-//	  -H "Authorization: Bearer $BESZEL_TOKEN" | jq .
-//
-// Look at the "status" (or equivalent) field on a container record and
-// adjust isHealthy below if needed.
+// authenticates with a Beszel user's email/password and looks up whether a
+// named system/container is healthy.
 package beszel
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -82,9 +73,6 @@ type listResponse struct {
 	Items []map[string]any `json:"items"`
 }
 
-// Token is a pre-generated PocketBase auth token for a Beszel instance.
-type Token string
-
 // Target identifies a container to check, by its Beszel system and
 // container name.
 type Target struct {
@@ -96,11 +84,19 @@ func (t Target) String() string {
 	return t.System + "/" + t.Container
 }
 
+type Credentials struct {
+	Email    string
+	Password string
+}
+
 // Client holds a Beszel API session and caches to avoid hammering it.
 type Client struct {
 	baseURL string
-	token   Token
+	creds   Credentials
 	client  *http.Client
+
+	authMu sync.Mutex
+	token  string
 
 	mu            sync.Mutex
 	systemIDCache map[string]systemIDEntry
@@ -109,38 +105,125 @@ type Client struct {
 	resultCache map[string]cacheEntry
 }
 
-// New creates a Client. baseURL is the root URL of the Beszel instance,
-// token is a pre-generated PocketBase auth token (see README for how to
-// get one).
-func New(baseURL string, token Token) *Client {
+func New(baseURL string, creds Credentials) *Client {
 	return &Client{
 		baseURL:       strings.TrimRight(baseURL, "/"),
-		token:         token,
+		creds:         creds,
 		client:        &http.Client{Timeout: 5 * time.Second},
 		systemIDCache: make(map[string]systemIDEntry),
 		resultCache:   make(map[string]cacheEntry),
 	}
 }
 
-func (c *Client) pbGet(path string) (*listResponse, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+type authResponse struct {
+	Token string `json:"token"`
+}
+
+// authenticateLocked requires authMu held.
+func (c *Client) authenticateLocked() error {
+	payload, err := json.Marshal(map[string]string{
+		"identity": c.creds.Email,
+		"password": c.creds.Password,
+	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+string(c.token))
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/collections/users/auth-with-password", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("beszel returned %s", resp.Status)
+		return fmt.Errorf("beszel auth returned %s", resp.Status)
+	}
+
+	var out authResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+
+	c.token = out.Token
+	return nil
+}
+
+func (c *Client) Authenticate() error {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	return c.authenticateLocked()
+}
+
+// ensureToken re-authenticates unless the cached token has already moved
+// past stale.
+func (c *Client) ensureToken(stale string) (string, error) {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	if c.token != "" && c.token != stale {
+		return c.token, nil
+	}
+	if err := c.authenticateLocked(); err != nil {
+		return "", err
+	}
+	return c.token, nil
+}
+
+// rawGet performs an authenticated GET and returns the raw body and status
+// code, without treating a non-200 status as an error.
+func (c *Client) rawGet(path, token string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+func (c *Client) pbGet(path string) (*listResponse, error) {
+	token, err := c.ensureToken("")
+	if err != nil {
+		return nil, err
+	}
+
+	body, status, err := c.rawGet(path, token)
+	if err != nil {
+		return nil, err
+	}
+
+	if status == http.StatusUnauthorized {
+		token, err = c.ensureToken(token)
+		if err != nil {
+			return nil, fmt.Errorf("re-authenticate: %w", err)
+		}
+		body, status, err = c.rawGet(path, token)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("beszel returned status %d", status)
 	}
 
 	var out listResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
