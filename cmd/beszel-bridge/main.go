@@ -45,7 +45,7 @@ func handleStatus(client *beszel.Client) http.HandlerFunc {
 			return
 		}
 
-		w.WriteHeader(client.CheckContainer(system, container))
+		w.WriteHeader(client.CheckContainer(beszel.Target{System: system, Container: container}))
 	}
 }
 

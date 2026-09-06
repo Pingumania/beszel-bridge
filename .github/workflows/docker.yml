@@ -1,26 +1,22 @@
 name: Docker
 
+x-paths: &paths
+  - "cmd/**"
+  - "internal/**"
+  - "go.mod"
+  - "Dockerfile"
+  - ".dockerignore"
+  - ".github/workflows/docker.yml"
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
     tags: ["v*.*.*"]
-    paths:
-      - "cmd/**"
-      - "internal/**"
-      - "go.mod"
-      - "Dockerfile"
-      - ".dockerignore"
-      - ".github/workflows/docker.yml"
+    paths: *paths
   pull_request:
     branches: [main]
-    paths:
-      - "cmd/**"
-      - "internal/**"
-      - "go.mod"
-      - "Dockerfile"
-      - ".dockerignore"
-      - ".github/workflows/docker.yml"
+    paths: *paths
 
 permissions:
   contents: read
