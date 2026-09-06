@@ -22,6 +22,21 @@ The bridge logs in with a Beszel user's email/password on startup (and
 again automatically if its session expires), so there's no token to mint
 or rotate by hand.
 
+### Recommended: create a read-only Beszel user for the bridge
+
+Create a dedicated read-only user for the bridge, so its credentials
+can't modify or delete anything in Beszel.
+
+1. In PocketBase's admin panel (`http://<beszel-host>:8090/_/`), open the
+   `users` collection, add a new user, and set its `role` field to
+   **read-only**.
+2. Give it visibility into the systems/containers the bridge needs to
+   check: in the same admin panel, open the `systems` collection, open
+   each system record, and add the read-only user in the `users` field.
+
+A read-only user can't create or modify systems, only view what's shared
+with it. The bridge only ever reads, so this is enough.
+
 `docker-compose.yml`:
 ```yaml
 services:
