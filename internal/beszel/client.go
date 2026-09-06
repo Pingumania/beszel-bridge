@@ -12,7 +12,7 @@
 //	  -H "Authorization: Bearer $BESZEL_TOKEN" | jq .
 //
 // Look at the "status" (or equivalent) field on a container record and
-// adjust healthyValues below if needed.
+// adjust isHealthy below if needed.
 package beszel
 
 import (
@@ -28,11 +28,16 @@ import (
 
 const cacheTTL = 15 * time.Second
 
-// Adjust this if your Beszel version reports container status differently.
-var healthyValues = map[string]bool{
-	"up":      true,
-	"healthy": true,
-	"running": true,
+func isHealthy(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch {
+	case strings.HasPrefix(status, "up"):
+		return true
+	case status == "healthy", status == "running":
+		return true
+	default:
+		return false
+	}
 }
 
 type cacheEntry struct {
@@ -189,7 +194,7 @@ func (c *Client) checkContainerUncached(target Target) int {
 	}
 
 	status, _ := record["status"].(string)
-	if healthyValues[strings.ToLower(status)] {
+	if isHealthy(status) {
 		return http.StatusOK
 	}
 	return http.StatusServiceUnavailable
