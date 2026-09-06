@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"beszel-bridge/internal/beszel"
 )
@@ -58,6 +59,14 @@ func main() {
 	mux.HandleFunc("/status/", handleStatus(client))
 
 	addr := ":" + cfg.Port
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	log.Printf("beszel-bridge listening on %s, backed by %s", addr, cfg.BeszelURL)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Fatal(srv.ListenAndServe())
 }

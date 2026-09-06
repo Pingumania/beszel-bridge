@@ -21,12 +21,40 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
-const cacheTTL = 15 * time.Second
+const (
+	cacheTTL        = 15 * time.Second
+	systemIDTTL     = 5 * time.Minute
+	maxCacheEntries = 1000
+)
+
+// validNamePattern restricts system/container names to a safe charset so
+// they can't break out of the quoted string literals in PocketBase filter
+// expressions built by fmt.Sprintf below.
+var validNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func validName(s string) bool {
+	return validNamePattern.MatchString(s)
+}
+
+// pruneExpired removes expired entries from m, then clears it entirely if
+// it's still at cap, bounding memory use under sustained cache-key churn.
+func pruneExpired[K comparable, V any](m map[K]V, expiresOf func(V) time.Time) {
+	now := time.Now()
+	for k, v := range m {
+		if now.After(expiresOf(v)) {
+			delete(m, k)
+		}
+	}
+	if len(m) >= maxCacheEntries {
+		clear(m)
+	}
+}
 
 func isHealthy(status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
@@ -43,6 +71,11 @@ func isHealthy(status string) bool {
 type cacheEntry struct {
 	expires time.Time
 	code    int
+}
+
+type systemIDEntry struct {
+	expires time.Time
+	id      string
 }
 
 type listResponse struct {
@@ -70,7 +103,7 @@ type Client struct {
 	client  *http.Client
 
 	mu            sync.Mutex
-	systemIDCache map[string]string
+	systemIDCache map[string]systemIDEntry
 
 	resultMu    sync.Mutex
 	resultCache map[string]cacheEntry
@@ -84,7 +117,7 @@ func New(baseURL string, token Token) *Client {
 		baseURL:       strings.TrimRight(baseURL, "/"),
 		token:         token,
 		client:        &http.Client{Timeout: 5 * time.Second},
-		systemIDCache: make(map[string]string),
+		systemIDCache: make(map[string]systemIDEntry),
 		resultCache:   make(map[string]cacheEntry),
 	}
 }
@@ -130,9 +163,9 @@ func (c *Client) queryFirst(collection, filter string) (map[string]any, error) {
 
 func (c *Client) getSystemID(name string) (string, error) {
 	c.mu.Lock()
-	if id, ok := c.systemIDCache[name]; ok {
+	if entry, ok := c.systemIDCache[name]; ok && time.Now().Before(entry.expires) {
 		c.mu.Unlock()
-		return id, nil
+		return entry.id, nil
 	}
 	c.mu.Unlock()
 
@@ -146,7 +179,8 @@ func (c *Client) getSystemID(name string) (string, error) {
 
 	id, _ := record["id"].(string)
 	c.mu.Lock()
-	c.systemIDCache[name] = id
+	pruneExpired(c.systemIDCache, func(e systemIDEntry) time.Time { return e.expires })
+	c.systemIDCache[name] = systemIDEntry{expires: time.Now().Add(systemIDTTL), id: id}
 	c.mu.Unlock()
 	return id, nil
 }
@@ -155,6 +189,10 @@ func (c *Client) getSystemID(name string) (string, error) {
 // using a short-lived cache so a burst of Dashy refreshes doesn't hammer
 // Beszel.
 func (c *Client) CheckContainer(target Target) int {
+	if !validName(target.System) || !validName(target.Container) {
+		return http.StatusBadRequest
+	}
+
 	cacheKey := target.String()
 
 	c.resultMu.Lock()
@@ -167,6 +205,7 @@ func (c *Client) CheckContainer(target Target) int {
 	code := c.checkContainerUncached(target)
 
 	c.resultMu.Lock()
+	pruneExpired(c.resultCache, func(e cacheEntry) time.Time { return e.expires })
 	c.resultCache[cacheKey] = cacheEntry{expires: time.Now().Add(cacheTTL), code: code}
 	c.resultMu.Unlock()
 
